@@ -121,8 +121,6 @@ def get_dataset(slices_from_patient,
                 slices_w_less_brain=None,
                 image_size=240,
                 train_HGG_patients=239):
-    
-    print("Getting dataset")
 
     dir_paths = []
     for glioma in glioma_type:
@@ -146,5 +144,6 @@ def get_dataset(slices_from_patient,
     train_data_x = train_data_x[randomize]
     train_data_y = train_data_y[randomize]
 
-    print("Shape of x_train, y_train", train_data_x.shape, ",", train_data_y.shape)
+    print(mode, "data with shape:", train_data_x.shape, train_data_y.shape)
+
     return train_data_x, train_data_y
