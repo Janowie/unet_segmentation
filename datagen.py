@@ -4,6 +4,7 @@ import numpy as np
 import SimpleITK as sitka
 import random
 import keras
+import random
 
 
 def test():
@@ -41,57 +42,60 @@ def normalise(tensor, image_size):
     return tensor
 
 
-def get_slice_idxs_w_tumor(mask, num, slices_w_tumor_only):     
+def get_slice_idxs_w_tumor(mask, num, slices_w_tumor_only, tumor_region):     
     mask_idxs = []
     slice_offset = 20
     for i, s in enumerate(mask[slice_offset:]):
-        if np.count_nonzero(s > 0) > slices_w_tumor_only:
+        if np.count_nonzero(s == tumor_region if tumor_region else s > 0) > slices_w_tumor_only:
             mask_idxs.append(i + slice_offset)
         if len(mask_idxs) == num:
             return mask_idxs
     return mask_idxs
 
 
-def get_images_masks(patient_dir, slices_from_patient, image_size, slices_w_tumor_only, slices_w_less_brain, mode):
+def get_patients_tensors_and_mask(patient_dir, mask_sufix, imaging_sequence_sufixes):
+    mask_img = get_image_array(patient_dir + "/" + patient_dir[patient_dir.rfind('\\') + 1:] + mask_sufix)
+    tensors = []
+    for sufix in imaging_sequence_sufixes:
+        tensors.append(get_image_array(patient_dir + "/" + patient_dir[patient_dir.rfind('\\') + 1:] + sufix))
+    return tensors, mask_img
+
+
+def get_images_masks(patient_dir, slices_from, slices_to, slices_from_patient, image_size, slices_w_tumor_only, slices_w_less_brain, mode, tumor_region):
         
         imaging_sequence_sufixes = ["_flair.nii", "_t1.nii", "_t1ce.nii", "_t2.nii"]
         mask_sufix = "_seg.nii"
         num_slices_per_image = 159
-        # Slices with expected high ratio of brain campared with its background
-        slices_from = 60
-        slices_to = 100
         
         # Declare and initialize numpy arrays to return
         tensor = np.zeros((slices_from_patient, len(imaging_sequence_sufixes), 240, 240))
         mask = np.zeros((slices_from_patient, 1, 240, 240))
         
         # Open patients images
-        mask_img = get_image_array(patient_dir + "/" + patient_dir[patient_dir.rfind('\\') + 1:] + mask_sufix)
-        tensors = []
-        for sufix in imaging_sequence_sufixes:
-            tensors.append(get_image_array(patient_dir + "/" + patient_dir[patient_dir.rfind('\\') + 1:] + sufix))
+        tensors, mask_img = get_patients_tensors_and_mask(patient_dir, mask_sufix, imaging_sequence_sufixes)
         
         # Create field to iterate through
         slice_indexes = np.random.choice(range(slices_from, slices_to), slices_from_patient, replace=False)
         
-        # include slices with less brain - picks 2 or given number of slices from range 30-60 and (or) 100-120
-        if slices_w_less_brain:
-            if type(slices_w_less_brain) == int and slices_w_less_brain > 0:
-                for i in range(slices_w_less_brain):
-                    slice_indexes[i] = random.randint(*random.choice([(slices_from-20, slices_from), (slices_to, slices_to+20)]))
-        
         # if selected, replace all slices without tumor with slices that contain tumor
-        if slices_w_tumor_only and mode == "training":
-            indexes_w_tumor = get_slice_idxs_w_tumor(mask_img, len(slice_indexes), slices_w_tumor_only)
+        if slices_w_tumor_only and mode == "training": # tumor_region selection
+            indexes_w_tumor = get_slice_idxs_w_tumor(mask_img, len(slice_indexes), slices_w_tumor_only, tumor_region)
             for i, slice_i in enumerate(slice_indexes):
                 m_slice = mask_img[slice_i]
-                if np.count_nonzero(m_slice >= 0) < slices_w_tumor_only:
+                if np.count_nonzero(m_slice == tumor_region if tumor_region else m_slice > 0) < slices_w_tumor_only:
                     if i < len(indexes_w_tumor):
                         slice_indexes[i] = indexes_w_tumor[i]
                     else:
-                        break        
+                        break
         
-        # Loop through slice indexes and fill values in to the "to be returned" tensor
+        # include slices with less brain - picks 2 or given number of slices from range 30-60 and (or) 100-120
+        if slices_w_less_brain:
+            if type(slices_w_less_brain) == int and slices_w_less_brain > 0:
+                for idx, i in enumerate(range(slices_w_less_brain)):
+                    if idx >= slices_from_patient: break
+                    slice_indexes[i] = random.randint(*random.choice([(slices_from-20, slices_from), (slices_to, slices_to+20)]))
+        
+        # Loop through slice indexes and fill values in to the "to be returned" tensor        
         for final_tensor_i, slice_i in enumerate(slice_indexes):
             for tensors_i in range(len(imaging_sequence_sufixes)):
                 tensor[final_tensor_i][tensors_i] = tensors[tensors_i][slice_i]
@@ -102,59 +106,101 @@ def get_images_masks(patient_dir, slices_from_patient, image_size, slices_w_tumo
             tensor[final_tensor_i] = normalise(tensor[final_tensor_i], image_size)
                 
         return tensor, mask
+
+
+def load_patient(patient_dir, image_size):
+    imaging_sequence_sufixes = ["_flair.nii", "_t1.nii", "_t1ce.nii", "_t2.nii"]
+    mask_sufix = "_seg.nii"
+    
+    # Open patients images
+    tensors, mask = get_patients_tensors_and_mask(patient_dir, mask_sufix, imaging_sequence_sufixes)
+    
+    # Normalize
+    for i in range(len(tensors)):
+        tensors[i] = normalise(tensors[i], image_size)
+
+    return np.swapaxes(np.array(tensors), 0, 1), np.swapaxes(np.array([mask]), 0, 1)
     
 
-def convert_labels(masks, tumor_region):
+def convert_labels(masks, tumor_region, image_size):
     # Change all labels to tumor region specified
     if tumor_region == 0:
         raise ValueError('Invalid tumor_region value')
-    
-    background_val = 0
+    binary_masks = []
     tumor_val = 1
     for i, mask_slice in enumerate(masks):
-        masks[i][mask_slice < tumor_region] = background_val
-        masks[i][mask_slice >= tumor_region] = tumor_val
-    return masks    
+        binary_mask = np.zeros((1, image_size, image_size))
+        binary_mask[mask_slice >= tumor_region] = tumor_val
+        binary_masks.append(binary_mask)
+    return np.array(binary_masks)
+
+
+def get_dir_paths(file_path, mode, glioma_type):
+    dir_paths = []
+    for glioma in glioma_type:
+        for directory in os.listdir(file_path + mode + "/" + glioma):
+            dir_paths.append(os.path.join(file_path, mode, glioma, directory))
+    return dir_paths
 
 
 # Main function
 def get_dataset(slices_from_patient, 
+                slices_from, slices_to,
                 file_path='../dataset/', 
                 mode='training', 
                 glioma_type=['HGG'],
                 randomize_slices=False,
                 slices_w_tumor_only=False,
                 slices_w_less_brain=None,
+                tumor_region=None,
                 image_size=240,
                 train_HGG_patients=239):
 
-    dir_paths = []
-    for glioma in glioma_type:
-        for directory in os.listdir(file_path + mode + "/" + glioma):
-            dir_paths.append(os.path.join(file_path, mode, glioma, directory))  
-
-    train_data_x = []
-    train_data_y = []
-
+    x = []
+    y = []
+    dir_paths = get_dir_paths(file_path, mode, glioma_type)
+    
+    # Get tensors and masks
     for i, patient_dir in enumerate(dir_paths):
-        tensors, masks = get_images_masks(patient_dir, slices_from_patient, image_size, slices_w_tumor_only, slices_w_less_brain, mode)
+        tensors, masks = get_images_masks(patient_dir, slices_from, slices_to, slices_from_patient, image_size, slices_w_tumor_only, slices_w_less_brain, mode, tumor_region)
         for j in range(len(tensors)):
-            train_data_x.append(tensors[j])
-            train_data_y.append(masks[j])
+            x.append(tensors[j])
+            y.append(masks[j])
         if i == train_HGG_patients:
             break
-
-    train_data_x = np.array(train_data_x)
-    train_data_y = np.array(train_data_y)
+    
+    # Randomize slice order
+    x = np.array(x)
+    y = np.array(y)
     if randomize_slices:
-        randomize = np.arange(len(train_data_x))
+        randomize = np.arange(len(x))
         np.random.shuffle(randomize)
-        train_data_x = train_data_x[randomize]
-        train_data_y = train_data_y[randomize]
+        x = x[randomize]
+        y = y[randomize]
 
-    print(mode, "data with shape:", train_data_x.shape, train_data_y.shape)
+    print(mode, "data with shape:", x.shape, y.shape)
 
-    return train_data_x, train_data_y
+    return np.array(x), np.array(y)
+
+
+def get_whole_patient(number=1, 
+                      file_path='../dataset/', 
+                      mode='training', 
+                      glioma_type=['HGG'], 
+                      image_size=240                     
+                     ):
+    x = []
+    y = []
+    dir_paths = get_dir_paths(file_path, mode, glioma_type)
+    random.shuffle(dir_paths)
+    for i, patient_dir in enumerate(dir_paths):
+        if i == number: break
+        
+        tensors, masks = load_patient(patient_dir, image_size)
+        x.append(tensors)
+        y.append(masks)
+
+    return np.array(x), np.array(y)
 
 
 class AugmentationDatagen(keras.utils.Sequence):
