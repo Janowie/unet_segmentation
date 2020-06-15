@@ -73,9 +73,12 @@ def get_images_masks(patient_dir, slices_from, slices_to, slices_from_patient, i
 
     # Create field to iterate through
     if mode == "training" and tumor_region:
-        slice_indexes = np.random.choice(np.unique(np.nonzero(mask_img == tumor_region)[0]) or range(slices_from, slices_to), slices_from_patient)
+        try:
+            slice_indexes = np.random.choice(np.unique(np.nonzero(mask_img == tumor_region)[0]), slices_from_patient)
+        except:
+            slice_indexes = np.random.choice(range(slices_from, slices_to), slices_from_patient, replace=False)     
     else:
-        slice_indexes = np.random.choice(range(slices_from, slices_to), slices_from_patient, replace=False)
+        slice_indexes = np.random.choice(range(slices_from, slices_to), slices_from_patient, replace=False)        
     
     tensor = tensors[slice_indexes]
     mask = mask_img[slice_indexes]
@@ -109,6 +112,26 @@ def convert_labels(masks, tumor_region, image_size):
     for i, mask_slice in enumerate(masks):
         binary_mask = np.zeros((1, image_size, image_size))
         binary_mask[mask_slice >= tumor_region] = tumor_val
+        binary_masks.append(binary_mask)
+    return np.array(binary_masks)
+
+
+def convert_labels_eval(masks, tumor_region, image_size):
+    # Change all labels to tumor region specified
+    if tumor_region not in ["whole", "core", "enhancing"]:
+        raise ValueError('Invalid tumor_region value for eval convertion')
+    binary_masks = []
+    tumor_val = 1
+    for i, mask_slice in enumerate(masks):
+        binary_mask = np.zeros((1, image_size, image_size))
+        
+        if tumor_region == "whole":
+            binary_mask[mask_slice >= 1] = tumor_val
+        elif tumor_region == "core":
+            binary_mask[(mask_slice == 1) | (mask_slice >= 3)] = tumor_val
+        elif tumor_region == "enhancing":
+            binary_mask[mask_slice == 4] = tumor_val
+        
         binary_masks.append(binary_mask)
     return np.array(binary_masks)
 
